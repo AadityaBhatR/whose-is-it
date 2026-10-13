@@ -1,0 +1,68 @@
+# Builds the Windows installer and macOS disk images on GitHub's free runners.
+#   - Push a tag like v1.1.0  -> builds both and publishes a GitHub Release with the installers.
+#   - "Run workflow" button   -> builds both and attaches them to the run as artifacts.
+# The server address friends connect to is baked in from the repository variable
+# GAME_SERVER_URL (Settings -> Secrets and variables -> Actions -> Variables).
+name: Build installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: --win
+            files: dist/*.exe
+          - os: macos-latest
+            target: --mac
+            files: dist/*.dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - name: Build app
+        run: npx electron-vite build
+        env:
+          VITE_DEFAULT_SERVER: ${{ vars.GAME_SERVER_URL }}
+      - name: Package installer
+        run: npx electron-builder ${{ matrix.target }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: installers
+          merge-multiple: true
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" installers/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Whose Is It ${GITHUB_REF_NAME}" \
+            --notes "Windows: run the .exe (SmartScreen: More info -> Run anyway). macOS: open the arm64 dmg on Apple Silicon or the x64 dmg on Intel, then right-click the app -> Open the first time."
